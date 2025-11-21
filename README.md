@@ -1,4 +1,4 @@
-# GitHub Backup (Rust)
+# GitHub Replicant (Rust)
 
 A high-performance, asynchronous CLI tool written in Rust to backup (clone or pull) all public repositories from a specific GitHub user.
 
@@ -14,12 +14,12 @@ A high-performance, asynchronous CLI tool written in Rust to backup (clone or pu
 Ensure you have [Rust and Cargo](https://rustup.rs/) installed.
 
 ```bash
-git clone https://github.com/thalesmendonca/GitHub-Backup-rs.git
-cd GitHub-Backup-rs
+git clone https://github.com/thalesmendonca/GitHub-Replicant-rs.git
+cd GitHub-Replicant-rs
 cargo build --release
 ```
 
-The binary will be available at `target/release/github-backup-rs`.
+The binary will be available at `target/release/github-Replicant-rs`.
 
 ## Usage
 
