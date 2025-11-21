@@ -14,7 +14,7 @@ A high-performance, asynchronous CLI tool written in Rust to backup (clone or pu
 Ensure you have [Rust and Cargo](https://rustup.rs/) installed.
 
 ```bash
-git clone https://github.com/thalesmendonca/GitHub-Replicant-rs.git
+git clone https://github.com/ThalesMMS/GitHub-Replicant-rs.git
 cd GitHub-Replicant-rs
 cargo build --release
 ```
