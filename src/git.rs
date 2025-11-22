@@ -1,3 +1,11 @@
+//
+// git.rs
+// GitHub Replicant (Rust)
+//
+// Wraps git operations for repositories: ensures destination paths exist, then clones new repos or pulls updates on existing ones using async process execution and error surfacing.
+//
+// Thales Matheus Mendonça Santos - November 2025
+
 use crate::github::Repo;
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -32,8 +40,13 @@ async fn run_git_command(args: &[&str], cwd: Option<&Path>) -> Result<()> {
 }
 
 /// Clones the repository if it doesn't exist, or runs 'git pull' if it does.
-pub async fn sync_repository(repo: Repo, parent_dir: &Path) -> Result<()> {
-    let repo_path = parent_dir.join(&repo.name);
+pub async fn sync_repository(repo: Repo, repo_path: &Path) -> Result<()> {
+    // Ensure the parent directories exist before cloning/pulling.
+    if let Some(parent) = repo_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("Failed to ensure parent directory for {:?}", repo_path))?;
+    }
 
     // Check if directory exists AND contains a .git folder (indicating a valid repo)
     if repo_path.exists() && repo_path.join(".git").exists() {

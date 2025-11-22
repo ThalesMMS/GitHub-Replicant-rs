@@ -8,6 +8,7 @@ A high-performance, asynchronous CLI tool written in Rust to backup (clone or pu
 *   **Smart Sync:** Automatically detects if a repository exists to decide between `git clone` and `git pull`.
 *   **Filtration:** Option to include or exclude forked repositories (excludes forks by default).
 *   **Visual Feedback:** Real-time progress bar using `indicatif`.
+*   **Starred/Network Backup:** Sync repositories you starred, from the accounts you follow, or from your followers.
 
 ## Installation
 
@@ -32,6 +33,27 @@ Backup all non-forked repositories for a user (e.g., `torvalds`):
 cargo run -- torvalds
 ```
 
+### Starred Repositories
+Backup all repositories a user has starred:
+
+```bash
+cargo run -- torvalds --stars
+```
+
+### Repositories from Following
+Backup repositories from every account a user follows:
+
+```bash
+cargo run -- torvalds --following
+```
+
+### Repositories from Followers
+Backup repositories from every account that follows the user:
+
+```bash
+cargo run -- torvalds --followers
+```
+
 ### Include Forks
 To also backup forked repositories:
 
@@ -48,6 +70,14 @@ cargo run -- torvalds -c 16
 
 ### Output
 Repositories are downloaded to an `output/<username>` directory within the project folder.
+
+When cloning repositories that belong to other owners (e.g., starred repos or repos from followers/following), they are organized under a nested owner folder to avoid name collisions:
+
+```
+output/<username>/<owner>/<repo-name>
+```
+
+Repositories belonging to `<username>` stay in `output/<username>/<repo-name>` as before.
 
 ## License
 
