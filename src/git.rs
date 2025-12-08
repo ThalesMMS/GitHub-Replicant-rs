@@ -115,16 +115,23 @@ async fn force_update(repo_path: &Path) -> Result<()> {
     run_git_command(["fetch", "--all", "--prune"], Some(repo_path)).await?;
 
     // Determine the upstream branch to hard reset against.
-    let upstream = current_upstream(repo_path)
+    match current_upstream(repo_path)
         .await
-        .context("Unable to determine upstream branch for forced update")?;
-
-    // Reset hard to the upstream ref to drop local divergence or uncommitted changes.
-    run_git_command(["reset", "--hard", upstream.as_str()], Some(repo_path)).await
+        .context("Unable to determine upstream branch for forced update")?
+    {
+        Some(upstream) => {
+            // Reset hard to the upstream ref to drop local divergence or uncommitted changes.
+            run_git_command(["reset", "--hard", upstream.as_str()], Some(repo_path)).await
+        }
+        None => {
+            // Empty repositories (no commits yet) have no upstream; nothing to reset.
+            Ok(())
+        }
+    }
 }
 
 // Resolve the current branch's upstream reference (e.g., origin/main).
-async fn current_upstream(repo_path: &Path) -> Result<String> {
+async fn current_upstream(repo_path: &Path) -> Result<Option<String>> {
     // Prefer git's upstream resolution.
     if let Ok(upstream) = run_git_command_output(
         ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
@@ -132,20 +139,85 @@ async fn current_upstream(repo_path: &Path) -> Result<String> {
     )
     .await
     {
-        return Ok(upstream);
+        return Ok(Some(upstream));
     }
 
-    // Fallback: use the current branch name to build origin/<branch>.
-    let branch =
-        run_git_command_output(["rev-parse", "--abbrev-ref", "HEAD"], Some(repo_path)).await?;
-
-    if branch == "HEAD" {
-        return Err(anyhow::anyhow!(
-            "Repository is in a detached HEAD state; cannot determine upstream."
-        ));
+    // Next, try to use the current branch name to build origin/<branch> when it exists remotely.
+    if let Ok(branch) = run_git_command_output(["branch", "--show-current"], Some(repo_path)).await
+    {
+        if !branch.is_empty() {
+            let candidate = format!("origin/{}", branch);
+            if run_git_command(
+                ["rev-parse", "--verify", candidate.as_str()],
+                Some(repo_path),
+            )
+            .await
+            .is_ok()
+            {
+                return Ok(Some(candidate));
+            }
+        }
     }
 
-    Ok(format!("origin/{}", branch))
+    // Fallback to the remote HEAD if configured.
+    if let Ok(origin_head) = run_git_command_output(
+        [
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+        Some(repo_path),
+    )
+    .await
+    {
+        if !origin_head.is_empty() {
+            return Ok(Some(origin_head));
+        }
+    }
+
+    // If no remote HEAD is configured, pick the most recently updated remote branch when present.
+    if let Ok(remote_branch) = run_git_command_output(
+        [
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=-committerdate",
+            "--count=1",
+            "refs/remotes/origin",
+        ],
+        Some(repo_path),
+    )
+    .await
+    {
+        if let Some(branch) = remote_branch.lines().find(|b| !b.trim().is_empty()) {
+            return Ok(Some(branch.trim().to_string()));
+        }
+    }
+
+    // If the repository has no commits yet, treat it as having no upstream.
+    if !has_commits(repo_path).await? {
+        return Ok(None);
+    }
+
+    Err(anyhow::anyhow!(
+        "No upstream branch configured and no remote branches found"
+    ))
+}
+
+// Detect whether the repository already contains commits.
+async fn has_commits(repo_path: &Path) -> Result<bool> {
+    let status = Command::new("git")
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg("HEAD")
+        .current_dir(repo_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .context("Failed to check repository commit status")?;
+
+    Ok(status.success())
 }
 
 // Clone the repository, handling DMCA errors gracefully.

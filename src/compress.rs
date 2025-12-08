@@ -127,10 +127,8 @@ fn collect_folders_at_depth(root: &Path, depth: usize) -> Result<Vec<PathBuf>> {
 
 /// Compresses a folder into a .zip file.
 fn compress_folder(folder: &Path, zip_path: &Path) -> Result<()> {
-    let file = File::create(zip_path).context(format!(
-        "Failed to create zip file: {}",
-        zip_path.display()
-    ))?;
+    let file = File::create(zip_path)
+        .context(format!("Failed to create zip file: {}", zip_path.display()))?;
 
     let mut zip = ZipWriter::new(file);
     let options = FileOptions::default()

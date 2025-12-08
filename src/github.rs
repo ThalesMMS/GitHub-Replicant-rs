@@ -113,7 +113,11 @@ pub async fn fetch_starred_repos(client: &Client, username: &str) -> Result<Vec<
 /// Fetches all repositories the authenticated user is watching (subscriptions).
 /// Uses the authenticated `/user/subscriptions` endpoint to include both "Watching"
 /// and "Custom" notification settings. Falls back to public endpoint if not authenticated.
-pub async fn fetch_watched_repos(client: &Client, username: &str, is_authenticated: bool) -> Result<Vec<Repo>> {
+pub async fn fetch_watched_repos(
+    client: &Client,
+    username: &str,
+    is_authenticated: bool,
+) -> Result<Vec<Repo>> {
     if is_authenticated {
         // Authenticated endpoint returns ALL subscriptions including "Custom" notifications
         fetch_paginated(

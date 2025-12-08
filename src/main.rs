@@ -123,7 +123,9 @@ async fn main() -> Result<()> {
         SyncSource::Watching => {
             let is_authenticated = args.token.is_some();
             if is_authenticated {
-                println!("🔍 Fetching watched repositories (including Custom) for authenticated user");
+                println!(
+                    "🔍 Fetching watched repositories (including Custom) for authenticated user"
+                );
             } else {
                 println!("🔍 Fetching watched repositories for: {}", username);
             }
