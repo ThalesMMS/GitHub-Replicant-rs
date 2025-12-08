@@ -18,3 +18,11 @@ indicatif = "0.17" # Progress bar rendering
 
 # Error handling
 anyhow = "1.0"
+
+# Compression
+zip = "0.6"
+walkdir = "2.4"
+
+[[bin]]
+name = "compress-folders"
+path = "src/compress.rs"

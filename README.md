@@ -120,6 +120,32 @@ Repositories belonging to `<username>` stay in `output/<username>/<repo-name>` a
 - DMCA takedown: repositories blocked by GitHub are skipped with a warning and do not fail the run.
 - Default branch changes: if the remote default branch renamed and a pull fails, the tool automatically re-clones that repo to match the new default branch.
 
+---
+
+## Folder Compression Tool
+
+A separate binary to compress backed-up folders into individual `.zip` files.
+
+### Usage
+
+**Compress immediate child folders:**
+```bash
+cargo run --bin compress-folders -- --input output/ThalesMMS
+```
+This compresses each folder directly inside `output/ThalesMMS` into its own `.zip` file.
+
+**Compress at a deeper level (recursive):**
+```bash
+cargo run --bin compress-folders -- --input output/ThalesMMS-following --recursive 1
+```
+This compresses folders one level deeper — e.g., all folders inside `output/user-following/user1/`, all folders inside `output/user-following/user2/`, etc.
+
+### Options
+| Flag | Description |
+|------|-------------|
+| `-i, --input <PATH>` | Target folder containing directories to compress (required) |
+| `-r, --recursive <N>` | Depth level: 0 = immediate children (default), 1 = grandchildren, etc. |
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
