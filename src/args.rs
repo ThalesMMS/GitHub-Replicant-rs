@@ -45,4 +45,12 @@ pub struct Cli {
     /// Maximum number of concurrent git operations (clone/pull)
     #[arg(short, long, default_value_t = 8)]
     pub concurrency: usize,
+
+    /// Remove local repos not returned by the current GitHub query to mirror exactly
+    #[arg(long, default_value_t = false)]
+    pub exact_mirror: bool,
+
+    /// Force update existing repositories, discarding local changes and divergent history
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
 }

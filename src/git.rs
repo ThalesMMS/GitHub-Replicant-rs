@@ -8,12 +8,17 @@
 
 use crate::github::Repo;
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Stdio;
 use tokio::process::Command;
 
 /// Executes a git command asynchronously and captures the output.
-async fn run_git_command(args: &[&str], cwd: Option<&Path>) -> Result<()> {
+async fn run_git_command<I, S>(args: I, cwd: Option<&Path>) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     // Use tokio::process::Command for non-blocking execution
     let mut command = Command::new("git");
     if let Some(path) = cwd {
@@ -39,8 +44,35 @@ async fn run_git_command(args: &[&str], cwd: Option<&Path>) -> Result<()> {
     }
 }
 
+/// Executes a git command and returns stdout as String.
+async fn run_git_command_output<I, S>(args: I, cwd: Option<&Path>) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("git");
+    if let Some(path) = cwd {
+        command.current_dir(path);
+    }
+    command.args(args);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let output = command
+        .output()
+        .await
+        .context("Failed to execute 'git' command. Is Git installed?")?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!("Git command failed: {}", stderr))
+    }
+}
+
 /// Clones the repository if it doesn't exist, or runs 'git pull' if it does.
-pub async fn sync_repository(repo: Repo, repo_path: &Path) -> Result<()> {
+pub async fn sync_repository(repo: Repo, repo_path: &Path, force_reset: bool) -> Result<()> {
     // Ensure the parent directories exist before cloning/pulling.
     if let Some(parent) = repo_path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -50,8 +82,12 @@ pub async fn sync_repository(repo: Repo, repo_path: &Path) -> Result<()> {
 
     // Check if directory exists AND contains a .git folder (indicating a valid repo)
     if repo_path.exists() && repo_path.join(".git").exists() {
-        // Repository exists: Update (git pull)
-        run_git_command(&["pull"], Some(&repo_path)).await
+        // Repository exists: Update (git pull or forced reset)
+        if force_reset {
+            force_update(repo_path).await
+        } else {
+            run_git_command(["pull"], Some(repo_path)).await
+        }
     } else {
         // Repository doesn't exist or is incomplete: Clone (git clone)
 
@@ -67,7 +103,7 @@ pub async fn sync_repository(repo: Repo, repo_path: &Path) -> Result<()> {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid destination path"))?;
 
-        let result = run_git_command(&["clone", &repo.clone_url, path_str], None).await;
+        let result = run_git_command(["clone", repo.clone_url.as_str(), path_str], None).await;
 
         // If clone fails, try to clean up the partially created directory
         if result.is_err() {
@@ -75,4 +111,43 @@ pub async fn sync_repository(repo: Repo, repo_path: &Path) -> Result<()> {
         }
         result
     }
+}
+
+// Forcefully update a repository by fetching all remotes and resetting to the upstream branch.
+async fn force_update(repo_path: &Path) -> Result<()> {
+    // Fetch latest changes and prune removed branches.
+    run_git_command(["fetch", "--all", "--prune"], Some(repo_path)).await?;
+
+    // Determine the upstream branch to hard reset against.
+    let upstream = current_upstream(repo_path)
+        .await
+        .context("Unable to determine upstream branch for forced update")?;
+
+    // Reset hard to the upstream ref to drop local divergence or uncommitted changes.
+    run_git_command(["reset", "--hard", upstream.as_str()], Some(repo_path)).await
+}
+
+// Resolve the current branch's upstream reference (e.g., origin/main).
+async fn current_upstream(repo_path: &Path) -> Result<String> {
+    // Prefer git's upstream resolution.
+    if let Ok(upstream) = run_git_command_output(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        Some(repo_path),
+    )
+    .await
+    {
+        return Ok(upstream);
+    }
+
+    // Fallback: use the current branch name to build origin/<branch>.
+    let branch =
+        run_git_command_output(["rev-parse", "--abbrev-ref", "HEAD"], Some(repo_path)).await?;
+
+    if branch == "HEAD" {
+        return Err(anyhow::anyhow!(
+            "Repository is in a detached HEAD state; cannot determine upstream."
+        ));
+    }
+
+    Ok(format!("origin/{}", branch))
 }

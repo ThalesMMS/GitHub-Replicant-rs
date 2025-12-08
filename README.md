@@ -68,8 +68,27 @@ By default, the tool processes 8 repositories in parallel. You can adjust this w
 cargo run -- torvalds -c 16
 ```
 
+### Force Update Divergent Repos
+If a repository has diverged or has local changes, force-reset to the upstream branch:
+
+```bash
+cargo run -- torvalds --force
+```
+
+### Exact Mirror (remove stale repos)
+To delete local repositories not returned in the current query (e.g., stars you unstarred), opt into exact mirroring:
+
+```bash
+cargo run -- torvalds --stars --exact-mirror
+```
+
 ### Output
-Repositories are downloaded to an `output/<username>` directory within the project folder.
+Repositories are downloaded to an `output` directory within the project folder. Folder naming depends on the mode you run:
+
+* Own repositories: `output/<username>`
+* Starred: `output/<username>-stars`
+* Following: `output/<username>-follows`
+* Followers: `output/<username>-followers`
 
 When cloning repositories that belong to other owners (e.g., starred repos or repos from followers/following), they are organized under a nested owner folder to avoid name collisions:
 

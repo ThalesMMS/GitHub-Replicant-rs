@@ -16,6 +16,7 @@ use clap::Parser;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -109,6 +110,16 @@ async fn main() -> Result<()> {
         .filter(|r| args.include_forks || !r.fork)
         .collect();
 
+    // Compute the target output folder name based on the source type.
+    let output_dir_name = output_dir_name(username, &source);
+    let output_dir = PathBuf::from("output").join(&output_dir_name);
+
+    // Pre-compute the desired destination paths for mirroring and sync.
+    let desired_paths: HashSet<PathBuf> = repos_to_sync
+        .iter()
+        .map(|repo| destination_path(&output_dir, repo, username))
+        .collect();
+
     let count = repos_to_sync.len();
     println!(
         "✅ Found {} repositories ({} selected for synchronization) from {}.",
@@ -118,11 +129,17 @@ async fn main() -> Result<()> {
     );
 
     if count == 0 {
+        // Allow --exact-mirror to clean up when there are no repos to sync.
+        if args.exact_mirror {
+            tokio::fs::create_dir_all(&output_dir)
+                .await
+                .with_context(|| format!("Failed to create output directory: {:?}", output_dir))?;
+            prune_extra_repos(&output_dir, &desired_paths).await?;
+        }
         return Ok(());
     }
 
-    // Define and create output folder: output/<username>
-    let output_dir = PathBuf::from("output").join(username);
+    // Define and create output folder: output/<username> or the source-specific suffix.
     // Use tokio::fs for async file operations so we do not block the runtime.
     tokio::fs::create_dir_all(&output_dir)
         .await
@@ -142,6 +159,7 @@ async fn main() -> Result<()> {
     // Use Arc to safely share the output directory across tasks without cloning paths.
     let output_dir_arc = Arc::new(output_dir);
     let root_username = username.clone();
+    let force_update = args.force;
 
     let stream = stream::iter(repos_to_sync)
         .map(|repo| {
@@ -149,12 +167,13 @@ async fn main() -> Result<()> {
             let pb_clone = pb.clone();
             let repo_name = repo.name.clone();
             let root_username = root_username.clone();
+            let force_update = force_update;
             // Create an async task for each repository
             async move {
                 pb_clone.set_message(format!("🔄 {}", repo.name));
                 // Compute destination path respecting owner to avoid collisions.
                 let destination = destination_path(base_dir_clone.as_ref(), &repo, &root_username);
-                let result = git::sync_repository(repo.clone(), &destination).await;
+                let result = git::sync_repository(repo.clone(), &destination, force_update).await;
                 pb_clone.inc(1);
                 (repo_name, result)
             }
@@ -166,6 +185,11 @@ async fn main() -> Result<()> {
     let results: Vec<(String, Result<()>)> = stream.collect().await;
 
     pb.finish_with_message("🎉 Synchronization complete!");
+
+    // If requested, remove repositories not present in the latest fetch.
+    if args.exact_mirror {
+        prune_extra_repos(output_dir_arc.as_ref(), &desired_paths).await?;
+    }
 
     // Error Summary
     let errors: Vec<_> = results.iter().filter(|(_, res)| res.is_err()).collect();
@@ -191,4 +215,87 @@ fn destination_path(base_dir: &Path, repo: &github::Repo, root_username: &str) -
     } else {
         base_dir.join(&repo.owner.login).join(&repo.name)
     }
+}
+
+// Derive the output folder name based on the selected source.
+fn output_dir_name(username: &str, source: &SyncSource) -> String {
+    match source {
+        SyncSource::Own => username.to_string(),
+        SyncSource::Stars => format!("{}-stars", username),
+        SyncSource::Following => format!("{}-following", username),
+        SyncSource::Followers => format!("{}-followers", username),
+    }
+}
+
+// Determine if a path is a git repository by checking for a .git directory.
+async fn is_git_repo(path: &Path) -> bool {
+    tokio::fs::metadata(path.join(".git"))
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+}
+
+// Collect existing repository directories under the output folder (direct or nested).
+async fn existing_repo_paths(base_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut repos = Vec::new();
+    if !base_dir.exists() {
+        return Ok(repos);
+    }
+
+    let mut entries = tokio::fs::read_dir(base_dir)
+        .await
+        .with_context(|| format!("Failed to read directory {:?}", base_dir))?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if !entry.file_type().await?.is_dir() {
+            continue;
+        }
+
+        if is_git_repo(&path).await {
+            repos.push(path);
+            continue;
+        }
+
+        let mut inner = tokio::fs::read_dir(&path).await?;
+        while let Some(repo_entry) = inner.next_entry().await? {
+            let repo_path = repo_entry.path();
+            if repo_entry.file_type().await?.is_dir() && is_git_repo(&repo_path).await {
+                repos.push(repo_path);
+            }
+        }
+    }
+
+    Ok(repos)
+}
+
+// Remove repositories not present in the desired set and clean empty owner directories.
+async fn prune_extra_repos(base_dir: &Path, desired: &HashSet<PathBuf>) -> Result<()> {
+    let existing = existing_repo_paths(base_dir).await?;
+    for repo_path in existing {
+        if !desired.contains(&repo_path) {
+            tokio::fs::remove_dir_all(&repo_path)
+                .await
+                .with_context(|| {
+                    format!("Failed to remove outdated repository at {:?}", repo_path)
+                })?;
+        }
+    }
+
+    // Clean up empty owner directories left after pruning.
+    if base_dir.exists() {
+        let mut entries = tokio::fs::read_dir(base_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !entry.file_type().await?.is_dir() || is_git_repo(&path).await {
+                continue;
+            }
+
+            let mut inner = tokio::fs::read_dir(&path).await?;
+            if inner.next_entry().await?.is_none() {
+                tokio::fs::remove_dir_all(&path).await.ok();
+            }
+        }
+    }
+
+    Ok(())
 }
