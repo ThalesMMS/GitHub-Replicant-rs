@@ -26,6 +26,8 @@ The binary will be available at `target/release/github-Replicant-rs`.
 
 You can run the tool directly via `cargo run` or using the compiled binary.
 
+> ⚠️ Unauthenticated GitHub API calls are limited (60 requests/hour) and may fail on large syncs. Use `GITHUB_TOKEN` for authenticated requests to avoid 403 rate limit errors.
+
 ### Basic Usage
 Backup all non-forked repositories for a user (e.g., `torvalds`):
 
@@ -68,6 +70,22 @@ By default, the tool processes 8 repositories in parallel. You can adjust this w
 cargo run -- torvalds -c 16
 ```
 
+### Authenticated Requests (avoid rate limits)
+1. Create a GitHub token (fine-grained or classic) with at least `public_repo` or no scopes for public data.
+2. Export it so the CLI picks it up automatically:
+   ```bash
+   export GITHUB_TOKEN=<your-token>
+   ```
+   Or pass inline:
+   ```bash
+   cargo run -- torvalds --token <your-token>
+   ```
+3. Run your command (example with following):
+   ```bash
+   cargo run -- torvalds --following
+   ```
+   Authenticated mode raises the rate limit and avoids `403 Forbidden` when syncing many users.
+
 ### Force Update Divergent Repos
 If a repository has diverged or has local changes, force-reset to the upstream branch:
 
@@ -97,6 +115,10 @@ output/<username>/<owner>/<repo-name>
 ```
 
 Repositories belonging to `<username>` stay in `output/<username>/<repo-name>` as before.
+
+### Notes & Edge Cases
+- DMCA takedown: repositories blocked by GitHub are skipped with a warning and do not fail the run.
+- Default branch changes: if the remote default branch renamed and a pull fails, the tool automatically re-clones that repo to match the new default branch.
 
 ## License
 

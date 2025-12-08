@@ -42,6 +42,10 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub include_forks: bool,
 
+    /// GitHub token for authenticated API requests (env: GITHUB_TOKEN)
+    #[arg(long, env = "GITHUB_TOKEN")]
+    pub token: Option<String>,
+
     /// Maximum number of concurrent git operations (clone/pull)
     #[arg(short, long, default_value_t = 8)]
     pub concurrency: usize,

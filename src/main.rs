@@ -15,7 +15,10 @@ use args::Cli;
 use clap::Parser;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::Client;
+use reqwest::{
+    header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT},
+    Client,
+};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,10 +47,23 @@ async fn main() -> Result<()> {
         SyncSource::Own
     };
 
-    // The GitHub API requires a valid User-Agent.
+    // The GitHub API requires a valid User-Agent; include Authorization when provided.
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static("github-backup-rs-cli-v1"),
+    );
+    if let Some(token) = args.token.as_deref() {
+        let token_value = format!("Bearer {}", token);
+        let header_value = HeaderValue::from_str(&token_value)
+            .context("Invalid characters in GITHUB_TOKEN for Authorization header")?;
+        headers.insert(AUTHORIZATION, header_value);
+    }
+
     let client = Client::builder()
-        .user_agent("github-backup-rs-cli-v1")
-        .build()?;
+        .default_headers(headers)
+        .build()
+        .context("Failed to build HTTP client")?;
 
     // Fetch the requested repo set based on the selected source.
     let (all_repos, source_label) = match source {

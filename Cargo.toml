@@ -4,17 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Runtime Assíncrono, Processos e Sistema de Arquivos
+# Async runtime, processes, and filesystem
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
-# Chamadas HTTP e Serialização
+# HTTP calls and serialization
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 
-# Interface de Linha de Comando (CLI) e Feedback Visual
-clap = { version = "4.4", features = ["derive"] }
-indicatif = "0.17" # Para a barra de progresso
+# Command-line interface (CLI) and visual feedback
+clap = { version = "4.4", features = ["derive", "env"] }
+indicatif = "0.17" # Progress bar rendering
 
-# Tratamento de Erros
+# Error handling
 anyhow = "1.0"

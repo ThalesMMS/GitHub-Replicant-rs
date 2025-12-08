@@ -86,30 +86,26 @@ pub async fn sync_repository(repo: Repo, repo_path: &Path, force_reset: bool) ->
         if force_reset {
             force_update(repo_path).await
         } else {
-            run_git_command(["pull"], Some(repo_path)).await
+            match run_git_command(["pull"], Some(repo_path)).await {
+                Ok(()) => Ok(()),
+                Err(err) if is_default_branch_error(&err) => {
+                    println!(
+                        "ℹ️ Default branch changed for {}. Re-cloning to match remote.",
+                        repo.full_name
+                    );
+                    if let Err(remove_err) = tokio::fs::remove_dir_all(repo_path).await {
+                        return Err(err.context(format!(
+                            "Failed to remove repository before re-clone: {:?}",
+                            remove_err
+                        )));
+                    }
+                    clone_repository(&repo, repo_path).await
+                }
+                Err(err) => Err(err),
+            }
         }
     } else {
-        // Repository doesn't exist or is incomplete: Clone (git clone)
-
-        // If directory exists but no .git, remove it before cloning
-        if repo_path.exists() {
-            tokio::fs::remove_dir_all(&repo_path)
-                .await
-                .context("Failed to remove incomplete directory before cloning")?;
-        }
-
-        // Clone passing the full path as the last argument
-        let path_str = repo_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid destination path"))?;
-
-        let result = run_git_command(["clone", repo.clone_url.as_str(), path_str], None).await;
-
-        // If clone fails, try to clean up the partially created directory
-        if result.is_err() {
-            tokio::fs::remove_dir_all(&repo_path).await.ok();
-        }
-        result
+        clone_repository(&repo, repo_path).await
     }
 }
 
@@ -150,4 +146,48 @@ async fn current_upstream(repo_path: &Path) -> Result<String> {
     }
 
     Ok(format!("origin/{}", branch))
+}
+
+// Clone the repository, handling DMCA errors gracefully.
+async fn clone_repository(repo: &Repo, repo_path: &Path) -> Result<()> {
+    // If directory exists but no .git, remove it before cloning
+    if repo_path.exists() {
+        tokio::fs::remove_dir_all(repo_path)
+            .await
+            .context("Failed to remove incomplete directory before cloning")?;
+    }
+
+    // Clone passing the full path as the last argument
+    let path_str = repo_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid destination path"))?;
+
+    let result = run_git_command(["clone", repo.clone_url.as_str(), path_str], None).await;
+
+    // If clone fails, try to clean up the partially created directory
+    if let Err(err) = &result {
+        if is_dmca_error(err) {
+            println!(
+                "⚠️ Repo {} from user {} skipped due to DMCA takedown.",
+                repo.name, repo.owner.login
+            );
+            tokio::fs::remove_dir_all(repo_path).await.ok();
+            return Ok(());
+        }
+        tokio::fs::remove_dir_all(repo_path).await.ok();
+    }
+    result
+}
+
+// Detect default-branch mismatch errors reported by git pull.
+fn is_default_branch_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string();
+    msg.contains("Your configuration specifies to merge with the ref")
+        && msg.contains("no such ref was fetched")
+}
+
+// Detect DMCA-related errors.
+fn is_dmca_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("dmca")
 }
