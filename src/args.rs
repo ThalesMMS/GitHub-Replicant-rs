@@ -9,7 +9,7 @@
 use clap::{ArgGroup, Parser};
 
 /// Tool to locally synchronize repositories from a GitHub profile.
-/// Modes: own repos (default), starred repos, repos from followers, or from following.
+/// Modes: own repos (default), starred repos, repos from followers, following, or watching.
 #[derive(Parser, Debug)]
 #[command(
     author,
@@ -18,7 +18,7 @@ use clap::{ArgGroup, Parser};
     long_about = None,
     group(
         ArgGroup::new("source")
-            .args(["stars", "following", "followers"])
+            .args(["stars", "following", "followers", "watching"])
             .multiple(false)
     )
 )]
@@ -37,6 +37,10 @@ pub struct Cli {
     /// Sync repositories from this profile's followers
     #[arg(long, default_value_t = false)]
     pub followers: bool,
+
+    /// Sync repositories the user is watching
+    #[arg(long, default_value_t = false)]
+    pub watching: bool,
 
     /// Include forked repositories in synchronization
     #[arg(long, default_value_t = false)]

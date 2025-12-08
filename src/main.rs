@@ -29,6 +29,7 @@ enum SyncSource {
     Stars,
     Following,
     Followers,
+    Watching,
 }
 
 #[tokio::main]
@@ -43,6 +44,8 @@ async fn main() -> Result<()> {
         SyncSource::Following
     } else if args.followers {
         SyncSource::Followers
+    } else if args.watching {
+        SyncSource::Watching
     } else {
         SyncSource::Own
     };
@@ -116,6 +119,16 @@ async fn main() -> Result<()> {
                 repos,
                 format!("repositories from followers of {}", username),
             )
+        }
+        SyncSource::Watching => {
+            let is_authenticated = args.token.is_some();
+            if is_authenticated {
+                println!("🔍 Fetching watched repositories (including Custom) for authenticated user");
+            } else {
+                println!("🔍 Fetching watched repositories for: {}", username);
+            }
+            let repos = github::fetch_watched_repos(&client, username, is_authenticated).await?;
+            (repos, format!("watched repositories of {}", username))
         }
     };
 
@@ -240,6 +253,7 @@ fn output_dir_name(username: &str, source: &SyncSource) -> String {
         SyncSource::Stars => format!("{}-stars", username),
         SyncSource::Following => format!("{}-following", username),
         SyncSource::Followers => format!("{}-followers", username),
+        SyncSource::Watching => format!("{}-watching", username),
     }
 }
 

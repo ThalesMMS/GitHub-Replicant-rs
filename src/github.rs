@@ -110,6 +110,39 @@ pub async fn fetch_starred_repos(client: &Client, username: &str) -> Result<Vec<
     .await
 }
 
+/// Fetches all repositories the authenticated user is watching (subscriptions).
+/// Uses the authenticated `/user/subscriptions` endpoint to include both "Watching"
+/// and "Custom" notification settings. Falls back to public endpoint if not authenticated.
+pub async fn fetch_watched_repos(client: &Client, username: &str, is_authenticated: bool) -> Result<Vec<Repo>> {
+    if is_authenticated {
+        // Authenticated endpoint returns ALL subscriptions including "Custom" notifications
+        fetch_paginated(
+            client,
+            |page| {
+                format!(
+                    "https://api.github.com/user/subscriptions?per_page=100&page={}",
+                    page
+                )
+            },
+            "watched repositories (authenticated)",
+        )
+        .await
+    } else {
+        // Public endpoint only returns repos with "Watching" (All Activity) enabled
+        fetch_paginated(
+            client,
+            |page| {
+                format!(
+                    "https://api.github.com/users/{}/subscriptions?per_page=100&page={}",
+                    username, page
+                )
+            },
+            &format!("watched repositories for user {}", username),
+        )
+        .await
+    }
+}
+
 /// Fetches the list of usernames this profile follows.
 pub async fn fetch_following_users(client: &Client, username: &str) -> Result<Vec<String>> {
     let users: Vec<User> = fetch_paginated(

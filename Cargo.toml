@@ -2,6 +2,7 @@
 name = "github-backup-rs"
 version = "0.1.0"
 edition = "2021"
+default-run = "github-backup-rs"
 
 [dependencies]
 # Async runtime, processes, and filesystem
