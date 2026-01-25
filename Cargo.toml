@@ -1,0 +1,29 @@
+[package]
+name = "github-backup-rs"
+version = "0.1.0"
+edition = "2021"
+default-run = "github-backup-rs"
+
+[dependencies]
+# Async runtime, processes, and filesystem
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# HTTP calls and serialization
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+
+# Command-line interface (CLI) and visual feedback
+clap = { version = "4.4", features = ["derive", "env"] }
+indicatif = "0.17" # Progress bar rendering
+
+# Error handling
+anyhow = "1.0"
+
+# Compression
+zip = "0.6"
+walkdir = "2.4"
+
+[[bin]]
+name = "compress-folders"
+path = "src/compress.rs"
