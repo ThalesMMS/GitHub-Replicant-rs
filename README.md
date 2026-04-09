@@ -1,6 +1,10 @@
-# GitHub Replicant (Rust)
+# GitHub Replicant (Rust CLI)
 
-A high-performance, asynchronous CLI tool written in Rust to backup (clone or pull) all public repositories from a specific GitHub user.
+[![License: MIT](https://img.shields.io/github/license/ThalesMMS/GitHub-Replicant-rs)](LICENSE)
+
+GitHub Replicant is a high-performance Rust CLI for bulk GitHub repository backup and sync. It can clone or pull a user's own public repositories, starred repositories, watched repositories, and repositories discovered through followers or following lists.
+
+> The repository is named `GitHub-Replicant-rs`, and the compiled CLI executable is `github-backup-rs`.
 
 ## Features
 
@@ -20,7 +24,15 @@ cd GitHub-Replicant-rs
 cargo build --release
 ```
 
-The binary will be available at `target/release/github-Replicant-rs`.
+The binary will be available at `target/release/github-backup-rs`.
+
+## Quickstart
+
+```bash
+./target/release/github-backup-rs torvalds
+```
+
+This downloads `torvalds` repositories into the local `output/` directory.
 
 ## Usage
 
@@ -29,10 +41,12 @@ You can run the tool directly via `cargo run` or using the compiled binary.
 > ⚠️ Unauthenticated GitHub API calls are limited (60 requests/hour) and may fail on large syncs. Use `GITHUB_TOKEN` for authenticated requests to avoid 403 rate limit errors.
 
 ### Basic Usage
-Backup all non-forked repositories for a user (e.g., `torvalds`):
+Backup all non-forked repositories for a user (for example, `torvalds`):
 
 ```bash
 cargo run -- torvalds
+# or
+./target/release/github-backup-rs torvalds
 ```
 
 ### Starred Repositories
