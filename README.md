@@ -32,7 +32,7 @@ The binary will be available at `target/release/github-backup-rs`.
 ./target/release/github-backup-rs torvalds
 ```
 
-This downloads `torvalds` repositories into the local `output/` directory.
+Running `./target/release/github-backup-rs torvalds` downloads `torvalds` repositories into the local `output/torvalds/` directory.
 
 ## Usage
 
