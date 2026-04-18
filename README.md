@@ -1,10 +1,35 @@
 # GitHub Replicant (Rust CLI)
 
-[![License: MIT](https://img.shields.io/github/license/ThalesMMS/GitHub-Replicant-rs)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 GitHub Replicant is a high-performance Rust CLI for bulk GitHub repository backup and sync. It can clone or pull a user's own public repositories, starred repositories, watched repositories, and repositories discovered through followers or following lists.
 
-> The repository is named `GitHub-Replicant-rs`, and the compiled CLI executable is `github-backup-rs`.
+> This development repository is named `GitHub-Replicant-rs`, and the compiled CLI executable is `github-backup-rs`.
+
+## Start here in 30 seconds
+
+```bash
+git clone https://github.com/ThalesMMS/GitHub-Replicant-rs.git
+cd GitHub-Replicant-rs
+cargo run -- torvalds
+```
+
+That first run:
+- syncs `torvalds` non-fork repositories by default
+- writes them under `output/torvalds/`
+- uses unauthenticated GitHub API requests unless you export `GITHUB_TOKEN`
+
+If you want a release binary instead of `cargo run`, build it with `cargo build --release` and use `./target/release/github-backup-rs`.
+
+Example output layout after a successful run:
+
+```text
+output/
+└── torvalds/
+    ├── linux/
+    ├── subsurface/
+    └── uemacs/
+```
 
 ## Features
 
