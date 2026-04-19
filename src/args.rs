@@ -7,6 +7,7 @@
 // Thales Matheus Mendonça Santos - November 2025
 
 use clap::{ArgGroup, Parser};
+use std::path::PathBuf;
 
 /// Tool to locally synchronize repositories from a GitHub profile.
 /// Modes: own repos (default), starred repos, repos from followers, following, or watching.
@@ -53,6 +54,10 @@ pub struct Cli {
     /// Maximum number of concurrent git operations (clone/pull)
     #[arg(short, long, default_value_t = 8)]
     pub concurrency: usize,
+
+    /// Base directory for sync output
+    #[arg(long, value_name = "PATH")]
+    pub output_dir: Option<PathBuf>,
 
     /// Remove local repos not returned by the current GitHub query to mirror exactly
     #[arg(long, default_value_t = false)]

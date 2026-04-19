@@ -32,6 +32,20 @@ enum SyncSource {
     Watching,
 }
 
+/// CLI entry point that fetches repositories from GitHub (based on CLI flags) and synchronizes them into a local output directory.
+///
+/// Parses command-line arguments, selects the dataset to sync (own repos, stars, following, followers, or watching), constructs an HTTP client (including optional authorization), fetches and filters repositories, validates and creates the target output directory, and concurrently clones/updates each repository. Optionally prunes local repositories not present in the latest fetch when `--exact-mirror` is used. On completion, prints a summary and returns an error if any repository synchronization failed.
+///
+/// # Returns
+///
+/// `Ok(())` on success, or an error if any step (HTTP client construction, fetching data, filesystem operations, or repository synchronizations) fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Run the compiled binary from the command line, e.g.:
+/// // cargo run -- alice --stars --output-dir ./backup
+/// ```
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
@@ -143,7 +157,12 @@ async fn main() -> Result<()> {
 
     // Compute the target output folder name based on the source type.
     let output_dir_name = output_dir_name(username, &source);
-    let output_dir = PathBuf::from("output").join(&output_dir_name);
+    let output_root = args
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("output"));
+    let output_dir = output_root.join(&output_dir_name);
+    validate_output_dir(&output_dir)?;
 
     // Pre-compute the desired destination paths for mirroring and sync.
     let desired_paths: HashSet<PathBuf> = repos_to_sync
@@ -198,7 +217,6 @@ async fn main() -> Result<()> {
             let pb_clone = pb.clone();
             let repo_name = repo.name.clone();
             let root_username = root_username.clone();
-            let force_update = force_update;
             // Create an async task for each repository
             async move {
                 pb_clone.set_message(format!("🔄 {}", repo.name));
@@ -249,6 +267,22 @@ fn destination_path(base_dir: &Path, repo: &github::Repo, root_username: &str) -
 }
 
 // Derive the output folder name based on the selected source.
+/// Derives the output directory leaf name for a given GitHub username and sync source.
+///
+/// The leaf is the plain `username` for `SyncSource::Own`, or `"<username>-<suffix>"`
+/// where `<suffix>` is `stars`, `following`, `followers`, or `watching` for the
+/// corresponding sources.
+///
+/// # Returns
+///
+/// The directory name to use for the given username and source.
+///
+/// # Examples
+///
+/// ```ignore
+/// let name = output_dir_name("alice", &SyncSource::Stars);
+/// assert_eq!(name, "alice-stars");
+/// ```
 fn output_dir_name(username: &str, source: &SyncSource) -> String {
     match source {
         SyncSource::Own => username.to_string(),
@@ -259,7 +293,108 @@ fn output_dir_name(username: &str, source: &SyncSource) -> String {
     }
 }
 
+// Validate absolute output paths early; relative paths are created later if needed.
+/// Validates an absolute output directory path; relative paths are accepted without checks.
+///
+/// For absolute `output_dir`, this function ensures one of:
+/// - the path exists and is a directory, or
+/// - the path does not exist but its nearest existing ancestor is a directory.
+///
+/// If these conditions are not met, an error with contextual information is returned.
+///
+/// # Examples
+///
+/// ```ignore
+/// use std::path::Path;
+/// // Relative path is allowed (no validation performed)
+/// assert!(validate_output_dir(Path::new("relative/output")).is_ok());
+/// ```
+fn validate_output_dir(output_dir: &Path) -> Result<()> {
+    if !output_dir.is_absolute() {
+        return Ok(());
+    }
+
+    match std::fs::metadata(output_dir) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "Invalid output directory path {:?}: path exists but is not a directory",
+                    output_dir
+                );
+            }
+            std::fs::canonicalize(output_dir).with_context(|| {
+                format!(
+                    "Failed to validate output directory path {:?}: path cannot be accessed",
+                    output_dir
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut parent = output_dir.parent();
+            let (ancestor, metadata) = loop {
+                let candidate = parent.with_context(|| {
+                    format!(
+                        "Invalid output directory path {:?}: no existing ancestor found",
+                        output_dir
+                    )
+                })?;
+
+                match std::fs::metadata(candidate) {
+                    Ok(metadata) => break (candidate, metadata),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        parent = candidate.parent();
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "Invalid output directory path {:?}: ancestor {:?} cannot be accessed",
+                                output_dir, candidate
+                            )
+                        });
+                    }
+                }
+            };
+
+            if !metadata.is_dir() {
+                anyhow::bail!(
+                    "Invalid output directory path {:?}: ancestor {:?} is not a directory",
+                    output_dir,
+                    ancestor
+                );
+            }
+            std::fs::canonicalize(ancestor).with_context(|| {
+                format!(
+                    "Failed to validate output directory path {:?}: ancestor {:?} cannot be resolved",
+                    output_dir, ancestor
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Invalid output directory path {:?}: path cannot be accessed",
+                    output_dir
+                )
+            });
+        }
+    }
+
+    Ok(())
+}
+
 // Determine if a path is a git repository by checking for a .git directory.
+/// Determines whether the given path is a Git repository by checking for a `.git` directory.
+///
+/// # Returns
+///
+/// `true` if a `.git` entry exists at `path` and is a directory, `false` otherwise.
+///
+/// # Examples
+///
+/// ```ignore
+/// let path = std::path::Path::new(".");
+/// let _is_repo = is_git_repo(path).await;
+/// ```
 async fn is_git_repo(path: &Path) -> bool {
     tokio::fs::metadata(path.join(".git"))
         .await
@@ -301,6 +436,24 @@ async fn existing_repo_paths(base_dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 // Remove repositories not present in the desired set and clean empty owner directories.
+/// Removes repository directories under `base_dir` that are not present in `desired`, then removes any empty owner directories left behind.
+///
+/// The function mutates the filesystem: it deletes any repository directory that is not included in `desired` and then removes owner-level directories that become empty as a result.
+///
+/// # Examples
+///
+/// ```ignore
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+/// use std::collections::HashSet;
+/// use std::path::PathBuf;
+///
+/// let base = std::path::Path::new("/tmp/example-output");
+/// let desired: HashSet<PathBuf> = HashSet::new(); // no repos desired => all repos under `base` are removed
+///
+/// // Removes repos under `base` not listed in `desired` and prunes empty owner directories.
+/// prune_extra_repos(base, &desired).await.unwrap();
+/// # });
+/// ```
 async fn prune_extra_repos(base_dir: &Path, desired: &HashSet<PathBuf>) -> Result<()> {
     let existing = existing_repo_paths(base_dir).await?;
     for repo_path in existing {
@@ -330,4 +483,40 @@ async fn prune_extra_repos(base_dir: &Path, desired: &HashSet<PathBuf>) -> Resul
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+
+    #[test]
+    fn relative_output_dir_is_allowed() {
+        assert!(validate_output_dir(Path::new("output/torvalds")).is_ok());
+    }
+
+    #[test]
+    fn absolute_output_dir_with_existing_parent_is_allowed() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("torvalds");
+
+        assert!(validate_output_dir(&output_dir).is_ok());
+    }
+
+    #[test]
+    fn absolute_output_dir_with_missing_parent_is_allowed_if_ancestor_exists() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("missing").join("torvalds");
+
+        assert!(validate_output_dir(&output_dir).is_ok());
+    }
+
+    #[test]
+    fn existing_output_path_must_be_directory() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_dir = temp_dir.path().join("torvalds");
+        File::create(&output_dir).unwrap();
+
+        assert!(validate_output_dir(&output_dir).is_err());
+    }
 }

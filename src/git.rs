@@ -71,6 +71,75 @@ where
     }
 }
 
+fn parse_github_remote(url: &str) -> Option<(String, String)> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let path = if let Some(remote) = trimmed.strip_prefix("https://") {
+        github_remote_path(remote, '/', false)?
+    } else if let Some(remote) = trimmed.strip_prefix("git@") {
+        github_remote_path(remote, ':', false)?
+    } else if let Some(remote) = trimmed.strip_prefix("ssh://") {
+        github_remote_path(remote, '/', true)?
+    } else {
+        return None;
+    };
+
+    let mut parts = path.split('/');
+    let owner = parts.next()?.trim();
+    let repo_segment = parts.next()?.trim();
+    let repo = repo_segment.strip_suffix(".git").unwrap_or(repo_segment);
+
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        return None;
+    }
+
+    Some((owner.to_string(), repo.to_string()))
+}
+
+fn github_remote_path(remote: &str, separator: char, allow_port: bool) -> Option<&str> {
+    let (host, path) = remote.split_once(separator)?;
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    let host = strip_optional_www(host);
+    let host = if allow_port {
+        strip_optional_port(host)?
+    } else {
+        host
+    };
+
+    host.eq_ignore_ascii_case("github.com").then_some(path)
+}
+
+fn strip_optional_www(host: &str) -> &str {
+    match host.get(..4) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("www.") => &host[4..],
+        _ => host,
+    }
+}
+
+fn strip_optional_port(host: &str) -> Option<&str> {
+    match host.split_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            Some(host)
+        }
+        Some(_) => None,
+        None => Some(host),
+    }
+}
+
+fn remotes_match(local_url: &str, expected_repo: &Repo) -> bool {
+    let Some((owner, repo)) = parse_github_remote(local_url) else {
+        return false;
+    };
+
+    owner.eq_ignore_ascii_case(&expected_repo.owner.login)
+        && repo.eq_ignore_ascii_case(&expected_repo.name)
+}
+
+async fn get_origin_url(repo_path: &Path) -> Result<String> {
+    run_git_command_output(["remote", "get-url", "origin"], Some(repo_path))
+        .await
+        .with_context(|| format!("Failed to read origin remote URL for {:?}", repo_path))
+}
+
 /// Clones the repository if it doesn't exist, or runs 'git pull' if it does.
 pub async fn sync_repository(repo: Repo, repo_path: &Path, force_reset: bool) -> Result<()> {
     // Ensure the parent directories exist before cloning/pulling.
@@ -82,6 +151,16 @@ pub async fn sync_repository(repo: Repo, repo_path: &Path, force_reset: bool) ->
 
     // Check if directory exists AND contains a .git folder (indicating a valid repo)
     if repo_path.exists() && repo_path.join(".git").exists() {
+        let origin_url = get_origin_url(repo_path).await?;
+        if !remotes_match(&origin_url, &repo) {
+            return Err(anyhow::anyhow!(
+                "Refusing to update {:?}: origin remote does not match the expected GitHub repository. Expected {}, found {}. Inspect the checkout manually or remove it before retrying.",
+                repo_path,
+                repo.clone_url,
+                origin_url
+            ));
+        }
+
         // Repository exists: Update (git pull or forced reset)
         if force_reset {
             force_update(repo_path).await
@@ -262,4 +341,295 @@ fn is_default_branch_error(err: &anyhow::Error) -> bool {
 fn is_dmca_error(err: &anyhow::Error) -> bool {
     let msg = err.to_string().to_lowercase();
     msg.contains("dmca")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::github::Owner;
+    use std::ffi::OsString;
+    use std::future::Future;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::process::Command as StdCommand;
+    use std::sync::LazyLock;
+    use std::{env, fs};
+    use tempfile::TempDir;
+    use tokio::sync::Mutex;
+
+    static GIT_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn repo(owner: &str, name: &str) -> Repo {
+        Repo {
+            name: name.to_string(),
+            clone_url: format!("https://github.com/{}/{}.git", owner, name),
+            fork: false,
+            full_name: format!("{}/{}", owner, name),
+            owner: Owner {
+                login: owner.to_string(),
+            },
+        }
+    }
+
+    fn run_git(args: &[&str], cwd: &Path) {
+        let status = StdCommand::new(real_git_path())
+            .args(args)
+            .current_dir(cwd)
+            .status()
+            .expect("git command should run");
+        assert!(status.success(), "git command failed: {:?}", args);
+    }
+
+    fn real_git_path() -> PathBuf {
+        let output = StdCommand::new("sh")
+            .arg("-c")
+            .arg("command -v git")
+            .output()
+            .expect("git should be discoverable");
+        assert!(output.status.success(), "git should be on PATH");
+
+        PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("git path should be UTF-8")
+                .trim(),
+        )
+    }
+
+    fn temporary_git_repo_with_origin(origin_url: &str) -> (TempDir, PathBuf) {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let repo_path = temp.path().join("Repo");
+        fs::create_dir(&repo_path).expect("repo dir should be created");
+        run_git(&["init"], &repo_path);
+        run_git(&["remote", "add", "origin", origin_url], &repo_path);
+        (temp, repo_path)
+    }
+
+    fn install_fake_git(bin_dir: &Path) {
+        fs::create_dir_all(bin_dir).expect("fake git bin dir should be created");
+        let fake_git = bin_dir.join("git");
+        fs::write(
+            &fake_git,
+            r#"#!/bin/sh
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+if [ "$1" = "pull" ]; then
+  exit 0
+fi
+
+exec "$REAL_GIT" "$@"
+"#,
+        )
+        .expect("fake git script should be written");
+
+        let mut permissions = fs::metadata(&fake_git)
+            .expect("fake git metadata should be readable")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&fake_git, permissions).expect("fake git should be executable");
+    }
+
+    struct EnvGuard {
+        previous_path: Option<OsString>,
+        previous_real_git: Option<OsString>,
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous_path {
+                Some(path) => env::set_var("PATH", path),
+                None => env::remove_var("PATH"),
+            }
+
+            match &self.previous_real_git {
+                Some(path) => env::set_var("REAL_GIT", path),
+                None => env::remove_var("REAL_GIT"),
+            }
+        }
+    }
+
+    async fn with_fake_git<T>(future: impl Future<Output = T>) -> T {
+        let _lock = GIT_ENV_LOCK.lock().await;
+        let real_git = real_git_path();
+        let fake_git_dir = TempDir::new().expect("fake git temp dir should be created");
+        let fake_bin = fake_git_dir.path().join("bin");
+        install_fake_git(&fake_bin);
+
+        let previous_path = env::var_os("PATH");
+        let previous_real_git = env::var_os("REAL_GIT");
+        let mut paths = vec![fake_bin];
+        if let Some(path) = previous_path.as_ref() {
+            paths.extend(env::split_paths(path));
+        }
+
+        env::set_var(
+            "PATH",
+            env::join_paths(paths).expect("test PATH should be valid"),
+        );
+        env::set_var("REAL_GIT", real_git);
+        let _env_guard = EnvGuard {
+            previous_path,
+            previous_real_git,
+        };
+
+        future.await
+    }
+
+    #[test]
+    fn parses_supported_github_remote_urls() {
+        assert_eq!(
+            parse_github_remote("https://github.com/Owner/Repo"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("https://github.com/Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("git@github.com:Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("git@github.com:Owner/Repo"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("ssh://git@github.com/Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("https://user@github.com/Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("https://token:x-oauth-basic@www.github.com/Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("git@www.github.com:Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("ssh://git@github.com:22/Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+        assert_eq!(
+            parse_github_remote("ssh://git@www.github.com:22/Owner/Repo.git"),
+            Some(("Owner".to_string(), "Repo".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_non_github_or_malformed_remote_urls() {
+        assert_eq!(
+            parse_github_remote("https://example.com/Owner/Repo.git"),
+            None
+        );
+        assert_eq!(parse_github_remote("https://github.com/Owner"), None);
+        assert_eq!(
+            parse_github_remote("https://github.com/Owner/Repo/tree/main"),
+            None
+        );
+        assert_eq!(parse_github_remote(""), None);
+        assert_eq!(parse_github_remote("not-a-url"), None);
+        assert_eq!(parse_github_remote("https://github.com//Repo.git"), None);
+        assert_eq!(parse_github_remote("https://github.com/Owner/.git"), None);
+        assert_eq!(
+            parse_github_remote("ssh://git@github.com:/Owner/Repo.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn remotes_match_accepts_matching_and_equivalent_forms() {
+        let expected = repo("Owner", "Repo");
+
+        assert!(remotes_match(
+            "https://github.com/Owner/Repo.git",
+            &expected
+        ));
+        assert!(remotes_match("git@github.com:owner/repo.git", &expected));
+        assert!(remotes_match("ssh://git@github.com/OWNER/REPO", &expected));
+        assert!(remotes_match(
+            "https://github.com/OWNER/REPO.git",
+            &expected
+        ));
+        assert!(remotes_match(
+            "https://user@www.github.com/Owner/Repo.git",
+            &expected
+        ));
+        assert!(remotes_match(
+            "ssh://git@github.com:22/Owner/Repo.git",
+            &expected
+        ));
+    }
+
+    #[test]
+    fn remotes_match_rejects_mismatched_origin() {
+        let expected = repo("Owner", "Repo");
+
+        assert!(!remotes_match(
+            "https://github.com/OtherOwner/Repo.git",
+            &expected
+        ));
+        assert!(!remotes_match(
+            "https://github.com/Owner/OtherRepo.git",
+            &expected
+        ));
+        assert!(!remotes_match(
+            "https://example.com/Owner/Repo.git",
+            &expected
+        ));
+    }
+
+    #[tokio::test]
+    async fn sync_repository_updates_existing_checkout_with_matching_remote() {
+        let (_temp, repo_path) =
+            temporary_git_repo_with_origin("https://github.com/Owner/Repo.git");
+
+        with_fake_git(sync_repository(repo("Owner", "Repo"), &repo_path, false))
+            .await
+            .expect("matching origin should allow sync to proceed");
+    }
+
+    #[tokio::test]
+    async fn sync_repository_rejects_mismatched_existing_checkout_before_updates() {
+        let (_temp, repo_path) =
+            temporary_git_repo_with_origin("https://github.com/OtherOwner/Repo.git");
+
+        for force_reset in [false, true] {
+            let err = with_fake_git(sync_repository(
+                repo("Owner", "Repo"),
+                &repo_path,
+                force_reset,
+            ))
+            .await
+            .expect_err("mismatched origin should fail");
+            let msg = err.to_string();
+
+            assert!(msg.contains("Refusing to update"));
+            assert!(msg.contains("https://github.com/Owner/Repo.git"));
+            assert!(msg.contains("https://github.com/OtherOwner/Repo.git"));
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_repository_updates_existing_checkout_with_matching_ssh_remote() {
+        let (_temp, repo_path) = temporary_git_repo_with_origin("git@github.com:Owner/Repo.git");
+
+        with_fake_git(sync_repository(repo("Owner", "Repo"), &repo_path, false))
+            .await
+            .expect("canonically matching SSH origin should allow sync to proceed");
+    }
+
+    #[tokio::test]
+    async fn sync_repository_updates_existing_checkout_with_matching_ssh_port_remote() {
+        let (_temp, repo_path) =
+            temporary_git_repo_with_origin("ssh://git@www.github.com:22/Owner/Repo.git");
+
+        with_fake_git(sync_repository(repo("Owner", "Repo"), &repo_path, false))
+            .await
+            .expect("canonically matching SSH origin with port should allow sync to proceed");
+    }
 }

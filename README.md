@@ -65,6 +65,26 @@ You can run the tool directly via `cargo run` or using the compiled binary.
 
 > ⚠️ Unauthenticated GitHub API calls are limited (60 requests/hour) and may fail on large syncs. Use `GITHUB_TOKEN` for authenticated requests to avoid 403 rate limit errors.
 
+```text
+cargo run -- <USERNAME> [OPTIONS]
+./target/release/github-backup-rs <USERNAME> [OPTIONS]
+```
+
+Common options:
+
+| Flag | Description |
+|------|-------------|
+| `--stars` | Sync repositories the user has starred |
+| `--following` | Sync repositories from users this profile follows |
+| `--followers` | Sync repositories from this profile's followers |
+| `--watching` | Sync repositories the user is watching |
+| `--include-forks` | Include forked repositories in synchronization |
+| `--token <TOKEN>` | GitHub token for authenticated API requests |
+| `-c, --concurrency <N>` | Maximum number of concurrent git operations |
+| `--output-dir <PATH>` | Base directory for sync output |
+| `--exact-mirror` | Remove local repos not returned by the current GitHub query within the selected destination tree |
+| `--force` | Force update existing repositories, discarding local changes and divergent history |
+
 ### Basic Usage
 Backup all non-forked repositories for a user (for example, `torvalds`):
 
@@ -116,6 +136,24 @@ By default, the tool processes 8 repositories in parallel. You can adjust this w
 cargo run -- torvalds -c 16
 ```
 
+### Custom Output Directory
+By default, repositories are written under `output/<mode-specific-name>`:
+
+```bash
+cargo run -- torvalds
+# writes to output/torvalds/
+```
+
+Use `--output-dir` to choose a different absolute or relative base directory. The mode-specific subfolder is still appended to that base path:
+
+```bash
+cargo run -- torvalds --output-dir /Volumes/Backups/github
+# writes to /Volumes/Backups/github/torvalds/
+
+cargo run -- torvalds --output-dir backups/github
+# writes to backups/github/torvalds/
+```
+
 ### Authenticated Requests (avoid rate limits)
 1. Create a GitHub token (fine-grained or classic) with at least `public_repo` or no scopes for public data.
 2. Export it so the CLI picks it up automatically:
@@ -146,14 +184,18 @@ To delete local repositories not returned in the current query (e.g., stars you 
 cargo run -- torvalds --stars --exact-mirror
 ```
 
+When used with `--output-dir`, exact mirroring only removes stale repositories inside the selected destination tree. For example, `cargo run -- torvalds --stars --exact-mirror --output-dir /Volumes/Backups/github` only prunes under `/Volumes/Backups/github/torvalds-stars/`.
+
 ### Output
-Repositories are downloaded to an `output` directory within the project folder. Folder naming depends on the mode you run:
+Repositories are downloaded to an `output` directory relative to the directory from which you run the command unless you pass `--output-dir <PATH>` to override this default. Folder naming depends on the mode you run:
 
 * Own repositories: `output/<username>`
 * Starred: `output/<username>-stars`
 * Following: `output/<username>-following`
 * Followers: `output/<username>-followers`
 * Watching: `output/<username>-watching`
+
+With `--output-dir /Volumes/Backups/github`, those same mode-specific folders are created under `/Volumes/Backups/github/`, such as `/Volumes/Backups/github/torvalds/` or `/Volumes/Backups/github/torvalds-stars/`.
 
 When cloning repositories that belong to other owners (e.g., starred repos or repos from followers/following), they are organized under a nested owner folder to avoid name collisions:
 
