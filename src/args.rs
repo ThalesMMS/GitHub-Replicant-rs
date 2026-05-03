@@ -24,8 +24,8 @@ use std::path::PathBuf;
     )
 )]
 pub struct Cli {
-    /// The GitHub username
-    pub username: String,
+    /// The GitHub username (optional when using --batch-file)
+    pub username: Option<String>,
 
     /// Sync repositories the user has starred
     #[arg(long, default_value_t = false)]
@@ -66,4 +66,8 @@ pub struct Cli {
     /// Force update existing repositories, discarding local changes and divergent history
     #[arg(long, default_value_t = false)]
     pub force: bool,
+
+    /// Path to a text file containing GitHub usernames (one per line) for batch processing
+    #[arg(long, value_name = "PATH")]
+    pub batch_file: Option<PathBuf>,
 }

@@ -325,6 +325,14 @@ async fn clone_repository(repo: &Repo, repo_path: &Path) -> Result<()> {
             tokio::fs::remove_dir_all(repo_path).await.ok();
             return Ok(());
         }
+        if is_lfs_error(err) {
+            println!(
+                "⚠️ LFS error for {}/{}. Retrying without LFS smudge filter.",
+                repo.owner.login, repo.name
+            );
+            tokio::fs::remove_dir_all(repo_path).await.ok();
+            return clone_without_lfs(repo, repo_path).await;
+        }
         tokio::fs::remove_dir_all(repo_path).await.ok();
     }
     result
@@ -341,6 +349,56 @@ fn is_default_branch_error(err: &anyhow::Error) -> bool {
 fn is_dmca_error(err: &anyhow::Error) -> bool {
     let msg = err.to_string().to_lowercase();
     msg.contains("dmca")
+}
+
+// Detect Git LFS smudge filter failures.
+fn is_lfs_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("smudge filter lfs failed") || msg.contains("git lfs")
+}
+
+// Clone with GIT_LFS_SKIP_SMUDGE=1, then attempt git lfs pull (warn on failure).
+async fn clone_without_lfs(repo: &Repo, repo_path: &Path) -> Result<()> {
+    if repo_path.exists() {
+        tokio::fs::remove_dir_all(repo_path)
+            .await
+            .context("Failed to remove incomplete directory before LFS-skip clone")?;
+    }
+
+    let path_str = repo_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid destination path"))?;
+
+    let mut command = Command::new("git");
+    command.env("GIT_LFS_SKIP_SMUDGE", "1");
+    command.args(["clone", repo.clone_url.as_str(), path_str]);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+
+    let output = command
+        .output()
+        .await
+        .context("Failed to execute 'git clone' with LFS skip")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tokio::fs::remove_dir_all(repo_path).await.ok();
+        return Err(anyhow::anyhow!("Git clone (LFS-skip) failed: {}", stderr));
+    }
+
+    // Try to fetch LFS objects; warn but don't fail if it doesn't work.
+    match run_git_command(["lfs", "pull"], Some(repo_path)).await {
+        Ok(()) => println!(
+            "✅ LFS objects fetched for {}/{}.",
+            repo.owner.login, repo.name
+        ),
+        Err(_) => println!(
+            "⚠️ Could not fetch LFS objects for {}/{}. LFS files remain as pointers.",
+            repo.owner.login, repo.name
+        ),
+    }
+
+    Ok(())
 }
 
 #[cfg(all(test, unix))]

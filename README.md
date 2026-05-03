@@ -84,6 +84,7 @@ Common options:
 | `--output-dir <PATH>` | Base directory for sync output |
 | `--exact-mirror` | Remove local repos not returned by the current GitHub query within the selected destination tree |
 | `--force` | Force update existing repositories, discarding local changes and divergent history |
+| `--batch-file <PATH>` | Path to a text file containing GitHub usernames (one per line) for batch processing |
 
 ### Basic Usage
 Backup all non-forked repositories for a user (for example, `torvalds`):
@@ -185,6 +186,44 @@ cargo run -- torvalds --stars --exact-mirror
 ```
 
 When used with `--output-dir`, exact mirroring only removes stale repositories inside the selected destination tree. For example, `cargo run -- torvalds --stars --exact-mirror --output-dir /Volumes/Backups/github` only prunes under `/Volumes/Backups/github/torvalds-stars/`.
+
+### Batch Processing
+To process multiple GitHub users from a text file, create a `.txt` file with one username per line:
+
+```bash
+# Create a file named users.txt with the following content:
+# torvalds
+# gaearon
+# rust-lang
+```
+
+Then run the tool with `--batch-file`:
+
+```bash
+cargo run -- --batch-file users.txt
+# or
+./target/release/github-backup-rs --batch-file users.txt
+```
+
+The tool will:
+- Read usernames from the file (one per line)
+- Skip empty lines and lines starting with `#` (comments)
+- Clone repositories if they don't exist in the output folder
+- Pull (update) repositories if they already exist
+- Process each user sequentially with progress reporting
+
+You can combine batch mode with other flags:
+
+```bash
+# Batch process starred repositories
+cargo run -- --batch-file users.txt --stars
+
+# Batch process with custom output directory
+cargo run -- --batch-file users.txt --output-dir /Volumes/Backups/github
+
+# Batch process including forks
+cargo run -- --batch-file users.txt --include-forks
+```
 
 ### Output
 Repositories are downloaded to an `output` directory relative to the directory from which you run the command unless you pass `--output-dir <PATH>` to override this default. Folder naming depends on the mode you run:

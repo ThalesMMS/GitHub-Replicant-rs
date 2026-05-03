@@ -46,11 +46,40 @@ enum SyncSource {
 /// // Run the compiled binary from the command line, e.g.:
 /// // cargo run -- alice --stars --output-dir ./backup
 /// ```
+/// Reads usernames from a text file, one per line, ignoring empty lines and comments.
+fn read_usernames_from_file(file_path: &Path) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(file_path)
+        .with_context(|| format!("Failed to read batch file: {:?}", file_path))?;
+    
+    let usernames: Vec<String> = content
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.to_string())
+        .collect();
+    
+    if usernames.is_empty() {
+        anyhow::bail!("No valid usernames found in batch file: {:?}", file_path);
+    }
+    
+    Ok(usernames)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
-    let username = &args.username;
-
+    
+    // Handle batch mode: read usernames from file
+    let usernames = if let Some(batch_file) = &args.batch_file {
+        println!("📄 Reading usernames from batch file: {:?}", batch_file);
+        read_usernames_from_file(batch_file)?
+    } else {
+        let username = args.username.clone().context(
+            "A <USERNAME> is required unless --batch-file is provided",
+        )?;
+        vec![username]
+    };
+    
     // Determine which dataset to sync based on CLI flags.
     let source = if args.stars {
         SyncSource::Stars
@@ -82,21 +111,55 @@ async fn main() -> Result<()> {
         .build()
         .context("Failed to build HTTP client")?;
 
+    // Process each username in batch mode
+    let mut total_errors = 0;
+    let output_root = args
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("output"));
+
+    for (index, username) in usernames.iter().enumerate() {
+        println!("\n{:#<1$}", "", 60);
+        println!("[{}/{}] Processing user: {}", index + 1, usernames.len(), username);
+        println!("{:#<1$}", "", 60);
+        
+        if let Err(e) = process_user(&client, username, &source, &args, &output_root).await {
+            eprintln!("\n❌ Failed to process user {}: {}", username, e);
+            total_errors += 1;
+        }
+    }
+
+    if total_errors > 0 {
+        println!("\n⚠️ Batch processing completed with {} error(s).", total_errors);
+        return Err(anyhow::anyhow!("Batch processing finished with errors."));
+    }
+
+    println!("\n🎉 Batch processing completed successfully!");
+    Ok(())
+}
+
+async fn process_user(
+    client: &Client,
+    username: &str,
+    source: &SyncSource,
+    args: &Cli,
+    output_root: &Path,
+) -> Result<()> {
     // Fetch the requested repo set based on the selected source.
     let (all_repos, source_label) = match source {
         SyncSource::Own => {
             println!("🔍 Fetching repositories for: {}", username);
-            let repos = github::fetch_all_repos(&client, username).await?;
+            let repos = github::fetch_all_repos(client, username).await?;
             (repos, format!("{}'s repositories", username))
         }
         SyncSource::Stars => {
             println!("🔍 Fetching starred repositories for: {}", username);
-            let repos = github::fetch_starred_repos(&client, username).await?;
+            let repos = github::fetch_starred_repos(client, username).await?;
             (repos, format!("starred repositories of {}", username))
         }
         SyncSource::Following => {
             println!("🔍 Fetching accounts followed by: {}", username);
-            let following = github::fetch_following_users(&client, username).await?;
+            let following = github::fetch_following_users(client, username).await?;
 
             if following.is_empty() {
                 println!("ℹ️ No following accounts found for {}.", username);
@@ -108,7 +171,7 @@ async fn main() -> Result<()> {
                 "🔍 Fetching repositories for {} followed accounts.",
                 following.len()
             );
-            let repos = github::fetch_repos_for_users(&client, &following).await?;
+            let repos = github::fetch_repos_for_users(client, &following).await?;
             (
                 repos,
                 format!("repositories from accounts followed by {}", username),
@@ -116,7 +179,7 @@ async fn main() -> Result<()> {
         }
         SyncSource::Followers => {
             println!("🔍 Fetching followers of: {}", username);
-            let followers = github::fetch_followers(&client, username).await?;
+            let followers = github::fetch_followers(client, username).await?;
 
             if followers.is_empty() {
                 println!("ℹ️ No followers found for {}.", username);
@@ -128,7 +191,7 @@ async fn main() -> Result<()> {
                 "🔍 Fetching repositories for {} followers.",
                 followers.len()
             );
-            let repos = github::fetch_repos_for_users(&client, &followers).await?;
+            let repos = github::fetch_repos_for_users(client, &followers).await?;
             (
                 repos,
                 format!("repositories from followers of {}", username),
@@ -143,7 +206,7 @@ async fn main() -> Result<()> {
             } else {
                 println!("🔍 Fetching watched repositories for: {}", username);
             }
-            let repos = github::fetch_watched_repos(&client, username, is_authenticated).await?;
+            let repos = github::fetch_watched_repos(client, username, is_authenticated).await?;
             (repos, format!("watched repositories of {}", username))
         }
     };
@@ -156,11 +219,7 @@ async fn main() -> Result<()> {
         .collect();
 
     // Compute the target output folder name based on the source type.
-    let output_dir_name = output_dir_name(username, &source);
-    let output_root = args
-        .output_dir
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("output"));
+    let output_dir_name = output_dir_name(username, source);
     let output_dir = output_root.join(&output_dir_name);
     validate_output_dir(&output_dir)?;
 
@@ -208,7 +267,7 @@ async fn main() -> Result<()> {
     // Concurrent Synchronization
     // Use Arc to safely share the output directory across tasks without cloning paths.
     let output_dir_arc = Arc::new(output_dir);
-    let root_username = username.clone();
+    let root_username = username;
     let force_update = args.force;
 
     let stream = stream::iter(repos_to_sync)
@@ -216,7 +275,6 @@ async fn main() -> Result<()> {
             let base_dir_clone = Arc::clone(&output_dir_arc);
             let pb_clone = pb.clone();
             let repo_name = repo.name.clone();
-            let root_username = root_username.clone();
             // Create an async task for each repository
             async move {
                 pb_clone.set_message(format!("🔄 {}", repo.name));
