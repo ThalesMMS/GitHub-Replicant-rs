@@ -165,8 +165,30 @@ pub async fn sync_repository(repo: Repo, repo_path: &Path, force_reset: bool) ->
         if force_reset {
             force_update(repo_path).await
         } else {
+            let head_before = run_git_command_output(["rev-parse", "HEAD"], Some(repo_path))
+                .await
+                .ok();
+
             match run_git_command(["pull"], Some(repo_path)).await {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    if let Some(old_head) = head_before {
+                        let new_head = run_git_command_output(["rev-parse", "HEAD"], Some(repo_path))
+                            .await
+                            .unwrap_or_default();
+                        if old_head == new_head {
+                            println!("📥 {}: up to date.", repo.full_name);
+                        } else {
+                            let count = run_git_command_output(
+                                ["rev-list", "--count", &format!("{}..{}", old_head, new_head)],
+                                Some(repo_path),
+                            )
+                            .await
+                            .unwrap_or_else(|_| "?".to_string());
+                            println!("📥 {}: Pulled {} new commit(s).", repo.full_name, count);
+                        }
+                    }
+                    Ok(())
+                }
                 Err(err) if is_default_branch_error(&err) => {
                     println!(
                         "ℹ️ Default branch changed for {}. Re-cloning to match remote.",
@@ -180,7 +202,10 @@ pub async fn sync_repository(repo: Repo, repo_path: &Path, force_reset: bool) ->
                     }
                     clone_repository(&repo, repo_path).await
                 }
-                Err(err) => Err(err),
+                Err(err) => {
+                    eprintln!("❌ Pull failed for {}: {}", repo.full_name, err);
+                    Err(err)
+                }
             }
         }
     } else {
